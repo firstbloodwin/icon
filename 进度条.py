@@ -310,3 +310,12 @@ if not os.path.exists(log_dir):
 
 accesslog = "./log/gunicorn_access.log"
 errorlog = "./log/gunicorn_error.log"
+
+
+
+
+
+ query_resp = await response.json()
+  File "C:\Users\lWX1297912\AppData\Roaming\Python\Python38\site-packages\aiohttp\client_reqrep.py", line 1194, in json
+    raise ContentTypeError(
+aiohttp.client_exceptions.ContentTypeError: 0, message='Attempt to decode JSON with unexpected mimetype: text/html', url=URL('http://10.91.21.210:8341/bdat/dataAPI')
