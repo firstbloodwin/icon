@@ -319,3 +319,7 @@ errorlog = "./log/gunicorn_error.log"
   File "C:\Users\lWX1297912\AppData\Roaming\Python\Python38\site-packages\aiohttp\client_reqrep.py", line 1194, in json
     raise ContentTypeError(
 aiohttp.client_exceptions.ContentTypeError: 0, message='Attempt to decode JSON with unexpected mimetype: text/html', url=URL('http://10.91.21.210:8341/bdat/dataAPI')
+
+
+
+        com.huawei.aresocean.middle.common.exception.MiddleException: {"taskId":708415700737199360,"length":0,"columnNames":null,"columnTypes":null,"result":null,"startTime":1724675464780,"endTime":1724675656485,"taskType":null,"taskSuccess":false,"errorInfo":"exec 1 times,still failed.cost:3.195 min,taskId:708415700737199360,errorMsg:\njava.io.IOException: Code: 394, e.displayText() = DB::Exception: Query was cancelled (version 21.8.11.4 (official build))\n\n [wrapped] java.sql.SQLException: Code: 394, e.displayText() = DB::Exception: Query was cancelled (version 21.8.11.4 (official build))\n, server ClickHouseNode [uri=http://10.176.93.194:8124/power, options={socket_timeout=14400000}]@-1474859502"}
