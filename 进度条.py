@@ -70,3 +70,5 @@ error_label = tk.Label(root, text="", fg='red')
 error_label.pack()
 
 root.mainloop()
+
+test()
