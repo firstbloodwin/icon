@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""
+ZIP文件批量解压模块
+使用系统unzip命令和多进程处理优化性能
+"""
+
+import os
+import sys
+import logging
+import subprocess
+import time
+from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import List, Tuple, Optional
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('zip_extractor.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+class ZipExtractor:
+    """使用unzip和多进程的ZIP解压器"""
+    
+    def __init__(self, max_workers: Optional[int] = None, timeout: int = 300):
+        """
+        初始化解压器
+        
+        Args:
+            max_workers: 最大工作进程数，默认为CPU核心数
+            timeout: 单个解压任务超时时间（秒）
+        """
+        self.max_workers = max_workers or os.cpu_count()
+        self.timeout = timeout
+        self._check_unzip_available()
+        
+    def _check_unzip_available(self) -> None:
+        """检查系统是否安装了unzip命令"""
+        try:
+            result = subprocess.run(
+                ['which', 'unzip'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            logger.info(f"unzip命令可用: {result.stdout.strip()}")
+        except subprocess.CalledProcessError:
+            logger.error("系统未安装unzip命令，请先安装: sudo apt-get install unzip")
+            raise RuntimeError("unzip命令不可用")
+    
+    def extract_zip(self, zip_path: Path, extract_to: Path) -> Tuple[bool, str]:
+        """
+        解压单个ZIP文件
+        
+        Args:
+            zip_path: ZIP文件路径
+            extract_to: 解压目标目录
+            
+        Returns:
+            (成功标志, 错误信息)
+        """
+        try:
+            # 确保目标目录存在
+            os.makedirs(extract_to, exist_ok=True)
+            
+            # 检查写入权限
+            if not os.access(extract_to, os.W_OK):
+                error_msg = f"无写入权限: {extract_to}"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            # 使用unzip命令解压
+            cmd = [
+                'unzip',
+                '-o',  # 覆盖已存在文件
+                '-q',  # 安静模式，减少输出
+                str(zip_path),
+                '-d', str(extract_to)
+            ]
+            
+            logger.info(f"开始解压: {zip_path.name}")
+            start_time = time.time()
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout
+            )
+            
+            duration = time.time() - start_time
+            
+            if result.returncode != 0:
+                error_msg = f"解压失败: {zip_path.name} - {result.stderr}"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            logger.info(f"解压完成: {zip_path.name} (耗时: {duration:.2f}s)")
+            return True, ""
+            
+        except subprocess.TimeoutExpired:
+            error_msg = f"解压超时: {zip_path.name}"
+            logger.error(error_msg)
+            return False, error_msg
+        except Exception as e:
+            error_msg = f"解压异常: {zip_path.name} - {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    def process_nested_zips(self, directory: Path) -> int:
+        """
+        处理嵌套的ZIP文件
+        
+        Args:
+            directory: 要搜索的目录
+            
+        Returns:
+            处理的嵌套ZIP文件数量
+        """
+        nested_zips = list(directory.rglob("*.zip"))
+        processed_count = 0
+        
+        for nested_zip in nested_zips:
+            extract_to = nested_zip.parent
+            success, error = self.extract_zip(nested_zip, extract_to)
+            
+            if success:
+                try:
+                    os.remove(nested_zip)
+                    logger.info(f"已删除嵌套ZIP: {nested_zip.name}")
+                    processed_count += 1
+                except OSError as e:
+                    logger.warning(f"无法删除嵌套ZIP: {nested_zip.name} - {str(e)}")
+            else:
+                logger.warning(f"嵌套ZIP解压失败: {nested_zip.name} - {error}")
+        
+        return processed_count
+    
+    def process_single_zip(self, zip_file: Path, extract_base: Path, delete_original: bool = True) -> bool:
+        """
+        处理单个ZIP文件（包括解压和处理嵌套ZIP）
+        
+        Args:
+            zip_file: ZIP文件路径
+            extract_base: 解压基础目录
+            delete_original: 是否删除原始ZIP文件
+            
+        Returns:
+            处理是否成功
+        """
+        # 创建以ZIP文件名命名的子目录
+        extract_to = extract_base / zip_file.stem
+        
+        # 解压ZIP文件
+        success, error = self.extract_zip(zip_file, extract_to)
+        
+        if not success:
+            return False
+        
+        # 处理嵌套ZIP文件
+        nested_count = self.process_nested_zips(extract_to)
+        if nested_count > 0:
+            logger.info(f"处理了 {nested_count} 个嵌套ZIP文件: {zip_file.name}")
+        
+        # 删除原始ZIP文件
+        if delete_original:
+            try:
+                os.remove(zip_file)
+                logger.info(f"已删除原始ZIP: {zip_file.name}")
+            except OSError as e:
+                logger.warning(f"无法删除原始ZIP: {zip_file.name} - {str(e)}")
+        
+        return True
+    
+    def batch_extract(self, zip_dir: Path, extract_base: Path, delete_original: bool = True) -> dict:
+        """
+        批量解压ZIP文件
+        
+        Args:
+            zip_dir: 包含ZIP文件的目录
+            extract_base: 解压基础目录
+            delete_original: 是否删除原始ZIP文件
+            
+        Returns:
+            处理结果统计
+        """
+        # 检查目录权限
+        if not os.access(zip_dir, os.R_OK):
+            raise PermissionError(f"无读取权限: {zip_dir}")
+        
+        if not os.access(extract_base, os.W_OK):
+            raise PermissionError(f"无写入权限: {extract_base}")
+        
+        # 获取所有ZIP文件
+        zip_files = list(zip_dir.glob("*.zip"))
+        total_count = len(zip_files)
+        
+        if total_count == 0:
+            logger.warning(f"未找到ZIP文件: {zip_dir}")
+            return {"total": 0, "success": 0, "failed": 0}
+        
+        logger.info(f"找到 {total_count} 个ZIP文件，开始处理...")
+        
+        # 使用多进程并行处理
+        success_count = 0
+        failed_files = []
+        
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            # 提交所有任务
+            future_to_file = {
+                executor.submit(
+                    self.process_single_zip, 
+                    zip_file, 
+                    extract_base, 
+                    delete_original
+                ): zip_file for zip_file in zip_files
+            }
+            
+            # 处理结果
+            for future in as_completed(future_to_file):
+                zip_file = future_to_file[future]
+                try:
+                    success = future.result()
+                    if success:
+                        success_count += 1
+                    else:
+                        failed_files.append(zip_file.name)
+                except Exception as e:
+                    logger.error(f"处理异常: {zip_file.name} - {str(e)}")
+                    failed_files.append(zip_file.name)
+        
+        # 输出统计结果
+        logger.info(f"处理完成: 成功 {success_count}/{total_count}, 失败 {len(failed_files)}")
+        
+        if failed_files:
+            logger.warning(f"失败文件列表: {failed_files}")
+        
+        return {
+            "total": total_count,
+            "success": success_count,
+            "failed": len(failed_files),
+            "failed_files": failed_files
+        }
+
+
+def main():
+    """主函数示例"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="批量解压ZIP文件工具")
+    parser.add_argument("zip_dir", help="包含ZIP文件的目录路径")
+    parser.add_argument("extract_base", help="解压目标基础目录路径")
+    parser.add_argument("-w", "--workers", type=int, help="工作进程数")
+    parser.add_argument("-t", "--timeout", type=int, default=300, help="解压超时时间(秒)")
+    parser.add_argument("-k", "--keep", action="store_true", help="保留原始ZIP文件")
+    
+    args = parser.parse_args()
+    
+    zip_dir = Path(args.zip_dir)
+    extract_base = Path(args.extract_base)
+    
+    if not zip_dir.exists():
+        logger.error(f"ZIP目录不存在: {zip_dir}")
+        return 1
+    
+    # 创建解压器并执行批量解压
+    try:
+        extractor = ZipExtractor(
+            max_workers=args.workers,
+            timeout=args.timeout
+        )
+        
+        start_time = time.time()
+        result = extractor.batch_extract(zip_dir, extract_base, not args.keep)
+        duration = time.time() - start_time
+        
+        # 输出性能统计
+        logger.info(f"总耗时: {duration:.2f}秒")
+        if result["total"] > 0:
+            avg_time = duration / result["total"]
+            logger.info(f"平均每个文件耗时: {avg_time:.2f}秒")
+        
+        return 0 if result["failed"] == 0 else 1
+        
+    except Exception as e:
+        logger.error(f"程序执行异常: {str(e)}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
